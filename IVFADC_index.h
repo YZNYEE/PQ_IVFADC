@@ -1,13 +1,11 @@
 /*
 
-implement PQ algorithm based on FLANN software
-
-created on 2017/5/20
+	implement the IVFADC based on the FLANN software.
 
 */
 
-#ifndef FLANN_PQSINGLE_INDEX_H
-#define FLANN_PQSINGLE_INDEX_H
+#ifndef FLANN_IVFADC_INDEX_H
+#define FLANN_IVFADC_INDEX_H
 
 #include <algorithm>
 #include <string>
@@ -41,30 +39,27 @@ enum part_method{
 struct PQSingleIndexParams : public IndexParams{
 
 	PQSingleIndexParams(int cluster_k = 32,int part_m = 8,int method = 0,int iterator = 11,
-						std::vector<size_t> * rmatrix = NULL,
+						int coarse_cluster_k = 1000,std::vector<size_t> * rmatrix = NULL,
 						flann_centers_init_t centers_init = FLANN_CENTERS_RANDOM)
 	{
 	
-		(*this)["algorithm"] = -100;
+		(*this)["algorithm"] = -101;
 		(*this)["cluster_k"] = cluster_k;
 		(*this)["part_m"] = part_m;
 		(*this)["method"] = method;
 		(*this)["iterator"] = iterator;
 		(*this)["center_init"] = centers_init;
 
+		(*this)["coarse_cluster_k"] = coarse_cluster_k;
 		(*this)["rmatrix"] = rmatrix;
 
 	}
 };
 
-
-/*
-	PQ index
-*/
-
+/* IVFADC index */
 
 template <typename Distance>
-class PQSingleIndex : public NNIndex<Distance>
+class IVFADCIndex : public NNIndex<Distance>
 {
 public:
 	typedef typename Distance::ElementType ElementType;
@@ -75,14 +70,10 @@ public:
 	typedef bool needs_vector_space_distance;
 
 	int getType() const{
-		return -100;
+		return -101;
 	}
 
-	/*
-		Index constructor
-	*/
-
-	PQSingleIndex(const Matrix<ElementType>& inputData, const IndexParams& params = PQSingleIndexParams(),
+	IVFADCIndex(const Matrix<ElementType>& inputData, const IndexParams& params = PQSingleIndexParams(),
                 Distance d = Distance())
 				: BaseClass(params,d), memoryCounter_(0)
 	{
@@ -90,6 +81,9 @@ public:
 		part_m_ = get_param(params,"part_m",8);
         iterations_ = get_param(params,"iterations",11);
 		rmatrix_ = get_param(params,"rmatrix",NULL);
+
+		coarse_cluster_k_ = get_params(params,"coarse_cluster_k_",1000);
+
 		if (iterations_<0) {
             iterations_ = (std::numeric_limits<int>::max)();
         }
@@ -104,13 +98,15 @@ public:
 
 	}
 
-	PQSingleIndex(const IndexParams& params = PQSingleIndexParams(), Distance d = Distance())
+	IVFADCIndex(const IndexParams& params = PQSingleIndexParams(), Distance d = Distance())
         : BaseClass(params, d),  memoryCounter_(0)
     {
 		cluster_k_ = get_params(params,"cluster_k",32);
 		part_m_ = get_param(params,"part_m",8);
         iterations_ = get_param(params,"iterations",11);
 		rmatrix_ = get_param(params,"rmatrix",NULL);
+		
+		coarse_cluster_k_ = get_params(params,"coarse_cluster_k",1000);
 		if (iterations_<0) {
             iterations_ = (std::numeric_limits<int>::max)();
         }
@@ -121,9 +117,7 @@ public:
 		initCenterChooser();
     }
 
-	/* not implementing */
-
-	PQSingleIndex(const KMeansIndex& other) : BaseClass(other),
+	IVFADCIndex(const KMeansIndex& other) : BaseClass(other),
     	    (other.branching_),
     		iterations_(other.iterations_),
     		centers_init_(other.centers_init_),
@@ -131,12 +125,13 @@ public:
 			part_m_(other.part_m_),
 			method_(other.method_),
     		memoryCounter_(other.memoryCounter_)
-			rmatrix_(other.ramtrix_)
-    {
+			rmatrix_(other.rmatrix)
+			coarse_cluster_k_(other.coarse_cluster_k_)
+	{
     	initCenterChooser();
     }
 
-	PQSingleIndex& operator=(PQSingleIndex other)
+	IVFADCIndex& operator=(IVFADCIndex other)
     {
     	this->swap(other);
     	return *this;
@@ -159,33 +154,15 @@ public:
         }
     }
 
-	    /**
-     * Index destructor.
-     *
-     * Release the memory used by the index.
-     */
-    virtual ~PQSingleIndex()
-    {
-    	delete chooseCenters_;
-    	freeIndex();
-    }
-
-	BaseClass* clone() const
-    {
-    	return new PQSingleIndex(*this);
-    }
-
-	/*
-		it is temporary.
-		it will be changed.
-	*/
-
 	int usedMemory() const
     {
         return pool_.usedMemory+pool_.wastedMemory+memoryCounter_;
     }
 
-	using BaseClass::buildIndex;
+	BaseClass* clone() const
+    {
+    	return new IVFADCIndex(*this);
+    }
 
 	void addPoints(const Matrix<ElementType>& points, float rebuild_threshold = 2)
     {
@@ -217,6 +194,7 @@ public:
     	ar & iteration_;
     	ar & memoryCounter_;
     	ar & centers_init_;
+		ar & coarse_cluster_k_;
 
 		if(method_ == 2)
 			ar & serialization::make_binary_object(rmatrix_, obj->veclen_*sizeof(int));
@@ -224,16 +202,26 @@ public:
     	if (Archive::is_loading::value) {
 			lookup_table_.resize(part_m_);
 			for(int i=0;i<size_;i++){
-				lookup_table_[i]->resize(cluster_k_);
+				if(lookup_table_[i]!=NULL)
+					lookup_table_[i]->resize(cluster_k_);
+				else
+					lookup_table_[i] = new single_cluster(cluster_k_);
 				for(int j=0;j<cluster_k_;j++){
 					(*lookup_table_[i])[j] = new(pool_) Node();
 				}
 			}
+
+			for(int i=0;i<coarse_cluster_k_;i++)
+				if(coarse_index_[i]==NULL)
+					coarse_index_[i] = new(pool_) coarse_node();
     	}
 
 		for(int i=0;i<size_;i++)
 			for(int j=0;j<cluster_k_;j++)
 				ar & *((*lookup_table_[i])[j]);
+
+		for(int i=0;i<coarse_cluster_k_;i++)
+			ar & coarse_index_[i];
 
 		ar & part_indices_;
 		ar & part_information_;
@@ -245,6 +233,7 @@ public:
             index_params_["iterations"] = iterations_;
             index_params_["centers_init"] = centers_init_;
             index_params_["method"] = method_;
+			index_params_["coarse_cluster_k"] = coarse_cluster_k_;
     	}
     }
 
@@ -261,42 +250,19 @@ public:
     	la & *this;
     }
 
-	 /**
-     * Find set of nearest neighbors to vec. Their indices are stored inside
-     * the result object.
-     *
-     * Params:
-     *     result = the result object in which the indices of the nearest-neighbors are stored
-     *     vec = the vector for which to search the nearest neighbors
-     *     searchParams = parameters that influence the search algorithm (search_method ADC|SDC)
-     */
-
-	/*
-	* searchParams may be reconstructed.
-	*/
-	
-    void findNeighbors(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
-    {
-    	if (removed_) {
+	void findNeighbors(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
+	{
+		if (removed_) {
     		findNeighborsWithRemoved<true>(result, vec, searchParams);
     	}
     	else {
     		findNeighborsWithRemoved<false>(result, vec, searchParams);
     	}
-
-    }
-
-	/*
-		not implementing
-	*/
+	}
 
 	void getLookupTable(){};
 
 protected:
-
-	/*
-		build the index
-	*/
 
 	void buildIndexImpl()
     {
@@ -305,17 +271,59 @@ protected:
         }
 	
 		partMatrix(); // to part matrix based on method
-		computeClustering(); // to compute clustering centor and initial lookup_table
+		computeCoarseClustering(); // to compute clustering centor and initial lookup_table
+		computeRestClustering();
 
 	}
 
 private:
 
+	/* 
+		define some struct
+	*/
 
-	/*
-		define some struct 
-	*/ 
+	struct coarse_node{
+	
+		DistanceType * pivot;
 
+		DistanceType radius;
+
+		DistanceType variance;
+
+		std::vector<int> container;
+
+		int volume;
+
+		coarse_node(int num):container(num),volume(num){}
+
+		~coarse_node(){
+		
+			delete[] pivot;
+
+		}
+
+		template<typename Archive>
+		void serialize(Archive& ar){
+		
+			typedef IVFADCIndex<Distance> Index;
+			Index* obj = static_cast<Index*>(ar.getObject());
+
+			ar & volume;
+
+    		if (Archive::is_loading::value) {
+    			pivot = new DistanceType[obj->veclen_];
+    			contains.resize(volume)
+			}
+
+			ar & serialization::make_binary_object(pivot, obj->veclen_*sizeof(DistanceType));
+    		ar & radius;
+    		ar & variance;
+			ar & container;
+		
+		}
+		friend struct serialization::access;
+	
+	};
 
 	struct Node{
 	
@@ -347,93 +355,195 @@ private:
 		friend struct serialization::access;
 
 	};
+
+	typedef coarse_node* coarse_node_ptr;
+	typedef std::vector<coarse_node_ptr> coarse_table;
 	typedef Node* NodePtr;
 	typedef std::vector<NodePtr> single_cluster;
 	typedef std::vector<single_cluster*> LookupTable;
 
-	void freeIndex()
-	{
+	void freeIndex(){
 		for(int i=0;i<size_;i++)
 			for(int j=0;j<cluster_k_;j++){
 				(*lookup_table_[i])[j]->~Node();
 				(*lookup_table_[i])[j] = NULL;
 			}
+		for(int i=0;i<coarse_cluster_k_;i++){
+			coarse_index_[i]->~coarse_node();
+			coarse_index_[i] = NULL;
+		}
 		pool_.free();
 	}
 
-	/*
-		initize all subVectors
-	*/
-
-	void computeClustering()
+	void computeCoarseClustering()
 	{
-		lookup_table_.resize(part_m_);
-
-		for(int i=0;i<part_m_;i++)
-			lookup_table_[i] = new single_cluster(cluster_k_);
-
-		for(int i=0;i<part_m_;i++){
-			for(int j=0;j<cluster_k_;j++)
-				(*lookup_table_[i])[j] = new(pool_) Node();
-		}
-
-		part_indices_.resize(size_);
-		for(int i=0;i<part_m_;i++)
-			part_indices_[i].resize(part_m_);
-
-		ElementType ** all_sub;
-		all_sub = new ElementType*[size_];
-		for(int i=0;i<size_;i++){
-			all_sub[i] = new ElementType[part_m_];
-		}
-
-		int * indices;
-		indices = new int[size_];
-		for(int i=0 ;i<size_;i++)
+	
+		int * indices = new int[size_];
+		for(int i=0;i<size_;i++)
 			indices[i] = i;
 
-		for(int i=0;i<part_m_;i++){
-		
-			computeSubClustering(i,lookup_table_[i],all_sub,indices);
+		std::vector<ElementType *> pivots(coarse_cluster_k_);
+		for(int i=0;i<coarse_cluster_k_;i++)
+		{
+			pivots[i] = new ElementType[veclen_];
+			memoryCounter_ += veclen_*sizeof(DistanceType);
+		}
+		std::vector<double> radius(coarse_cluster_k_);
+		std::vector<double> variance(coarse_cluster_k_);
+		std::vector<int> belongs(size_);
+		std::vector<int> counts(coarse_cluster_k_);
 
+		computeClustering(point_,veclen_,indices,coarse_cluster_k_,pivots,radius,variance,belongs,counts);
+
+		coarse_index_.resize(coarse_cluster_k_);
+		for(int i=0;i<coarse_cluster_k_;i++){
+			coarse_index_[i] = new(pool_) coarse_node(counts[i]);
+			coarse_index_[i]->radius = radius[i];
+			coarse_index_[i]->variance = variance[i];
+			coarse_index_[i]->pivot = new DistanceType[veclen_];
+			for(int j=0;j<veclen_;j++)
+				(coarse_index_[i]->pivot)[j] = (DistanceType)pivots[j];
 		}
 
+		std::vector<int> pos(coarse_cluster_k_,0);
 		for(int i=0;i<size_;i++){
-			delete[] all_sub[i];
+			(coarse_index_[belongs[i]]->container)[pos[belongs[i]]] = i;
+			pos[belongs[i]]++;
 		}
-		delete[] all_sub;
+
+		/*check*/
+		size_t sum = 0;
+		for(int i=0;i<coarse_cluster_k_;i++){
+			assert(coarse_index_[i]->volume == (coarse_index_[i]->container).size());
+			assert(coarse_index_[i]->volume == pos[i]);
+			sum+=coarse_index_[i]->volume;
+		}
+
+		for(int i=0;i<coarse_cluster_k_)
+			delete[] pivots[i];
 		delete[] indices;
 
 	}
 
-	void computeSubClustering(int id,single_cluster * save,ElementType ** allsub,int * indices)
+	void computeRestClustering()
 	{
-		
-		loadSubVector(id,allsub);
-
-		std::vector<int> centers_idx(cluster_k_);
-		int centers_length;
-		(*chooseCenters_)(cluster_k_, indices, size_, &centers_idx[0], centers_length);
+		int * indices = new int[size_];
+		for(int i=0;i<size_;i++)
+			indices[i] = i;
 
 		int stride = veclen_/part_m_;
-		Matrix<double> dcenters(new double[cluster_k_*stride],cluster_k_,stride);
+
+		std::vector<ElementType *> restvec(size_);
+		for(int i=0;i<size_;i++)
+			restvec[i] = new ElementType[veclen_];
+		for(int i=0;i<coarse_cluster_k_;i++)
+			for(int j=0;j<coarse_index_[i]->volume;j++)
+				for(int k=0;k<veclen_;k++)
+					restvec[(coarse_index_[i]->container)[j]][k] = point_[(coarse_index_[i]->container)[j]][k]
+																	- (coarse_index_[i]->pivot)[k];
+
+		std::vector<ElementType *> allsub(size_);
+		for(int i=0;i<size_;i++)
+			allsub[i] = new ElementType[stride];
+
+		std::vector<ElementType *> pivots(cluster_k_);
+		for(int i=0;i<cluster_k_;i++)
+			pivots[i] = new ElementType[stride];
+		std::vector<double> radius(cluster_k_);
+		std::vector<double> variance(cluster_k_);
+		std::vector<int> belongs(size_);
+		std::vector<int> counts(cluster_k_);
+
+		/*
+			intialize the container.
+		*/
+		part_indices_.resize(size_);
+		for(int i=0;i<size_;i++)
+			part_indices_[i].resize(part_m_);
+		
+		lookup_table_.resize(part_m_);
+		for(int i=0;i<part_m_;i++){
+			lookup_table_[i] = new single_cluster(cluster_k_);
+			for(int j=0;j<cluster_k_;j++){
+				(*lookup_table_[i])[j] = new(pool_) Node();
+				(*lookup_table_[i])[j]->pivot = new DistanceType[stride];
+				memoryCounter_ += stride*sizeof(DistanceType);
+			}
+		}
+
+		for(int i=0;i<part_m_;i++)
+		{
+			loadSubVector(i,size_,allsub,restvec);
+			computeClustering(allsub,stride,indices,cluster_k_,pivots,radius,variance,belongs,counts);
+
+			// save part_indices
+			for(int j=0;j<size_;j++)
+				part_indices_[j][i] = belongs[j];
+
+			for(int j=0;j<cluster_k_;j++)
+			{
+				(*lookup_table_[i])[j]->radius = radius[j];
+				(*lookup_table_[i])[j]->variance = variance[j];
+				for(int k=0;k<stride;k++)
+				{
+					((*lookup_table_[i])[j]->pivot)[k] = (DistanceType)pivots[j][k];
+				}
+			}
+
+		}
+
+
+		for(int i=0;i<cluster_k_)
+			delete[] pivots[i];
+		for(int i=0;i<size_;i++){
+			delete[] all_sub[i];
+			delete[] restvec[i];
+		}
+		delete[] indices;
+
+	}
+
+
+	/*
+		it is universal functions to compute cluster.
+		params[1]:dataset
+		params[2]:width of the vector
+		params[3]:
+		params[4]:num of the clusters
+		params[5]:save the pivot
+		params[6]:save the radius of centers
+		params[7]:save the variance of centers
+		params[8]:save the owner
+	*/
+
+	void computeClustering(std::vector<ElementType*>& data,int cols,int * indices,int cluster_k, 
+							std::vector<DistanceType*>& pivots_,std::vector<double>& radius_,
+							std::vector<double>& variance_,std::vector<int>& belongs_,
+							std::vector<int>& counts_)
+	{
+		std::vector<int> centers_idx(cluster_k);
+		int centers_length;
+		(*chooseCenters_)(cluster_k, indices, size_, &centers_idx[0], centers_length);
+
+		int stride = cols;
+		Matrix<double> dcenters(new double[cluster_k*stride],cluster_k,stride);
 
 		for(int i=0;i<centers_length;i++){
 			for (size_t k=0; k<stride; ++k) {
-                dcenters[i][k] = allsub[centers_idx[i]][k];
+                dcenters[i][k] = data[centers_idx[i]][k];
             }
 		}
 
-		std::vector<DistanceType> radiuses(cluster_k_,0);
-        std::vector<int> count(cluster_k_,0);
+		std::vector<DistanceType> radiuses(cluster_k,0);
+        std::vector<int> count(cluster_k,0);
 
 		std::vector<int> belongs_to(size_);
         for (int i=0; i<size_; ++i) {
 
-            DistanceType sq_dist = distance_(allsub[indices[i]], dcenters[0], stride);
+            DistanceType sq_dist = distance_(data[indices[i]], dcenters[0], stride);
             belongs_to[i] = 0;
-            for (int j=1; j<cluster_k_; ++j) {
-                DistanceType new_sq_dist = distance_(allsub[indices[i]], dcenters[j], stride);
+            for (int j=1; j<cluster_k; ++j) {
+                DistanceType new_sq_dist = distance_(allsub[data[i]], dcenters[j], stride);
                 if (sq_dist>new_sq_dist) {
                     belongs_to[i] = j;
                     sq_dist = new_sq_dist;
@@ -453,12 +563,12 @@ private:
 
 			//compute the new cluster centers;
 
-			for(int i=0;i<cluster_k_;i++){
-			    memset(dcenters[i],0,sizeof(double)*cluster_k_);
+			for(int i=0;i<cluster_k;i++){
+			    memset(dcenters[i],0,sizeof(double)*clusterk_);
                 radiuses[i] = 0;
 			}
 			for (int i=0; i<size_; ++i) {
-                ElementType* vec = allsub[indices[i]];
+                ElementType* vec = data[indices[i]];
                 double* center = dcenters[belongs_to[i]];
                 for (size_t k=0; k<stride; ++k) {
                     center[k] += vec[k];
@@ -474,10 +584,10 @@ private:
 			// reassign points to clusters
 
             for (int i=0; i<size_; ++i) {
-                DistanceType sq_dist = distance_(allsub[indices[i]], dcenters[0], stride);
+                DistanceType sq_dist = distance_(data[indices[i]], dcenters[0], stride);
                 int new_centroid = 0;
-                for (int j=1; j<cluster_k_; ++j) {
-                    DistanceType new_sq_dist = distance_(allsub[indices[i]], dcenters[j], stride);
+                for (int j=1; j<cluster_k; ++j) {
+                    DistanceType new_sq_dist = distance_(data[indices[i]], dcenters[j], stride);
                     if (sq_dist>new_sq_dist) {
                         new_centroid = j;
                         sq_dist = new_sq_dist;
@@ -495,13 +605,13 @@ private:
                 }
             }
 
-			for (int i=0; i<cluster_k_; ++i) {
+			for (int i=0; i<cluster_k; ++i) {
                 // if one cluster converges to an empty cluster,
                 // move an element into that cluster
                 if (count[i]==0) {
-                    int j = (i+1)%cluster_k_;
+                    int j = (i+1)%cluster_k;
                     while (count[j]<=1) {
-                        j = (j+1)%cluster_k_;
+                        j = (j+1)%cluster_k;
                     }
 
                     for (int k=0; k<size_; ++k) {
@@ -517,17 +627,16 @@ private:
             }
 		}
 
-		for (int i=0; i<cluster_k_; ++i) {
-            (*save)[i]->pivot = new DistanceType[stride];
-            memoryCounter_ += stride*sizeof(DistanceType);
-            for (size_t k=0; k<stride; ++k) {
-                ((*save)[i]->pivot)[k] = (DistanceType)dcenters[i][k];
-            }
-			(*save)[i]->radius = radiuses[i];
-        }
+		//save the information
 
-		//compute the variance
-		for(int i=0; i<cluster_k_; i++){
+		for (int i=0; i<cluster_k; ++i) 
+            for (size_t k=0; k<stride; ++k) 
+                pivots[i][k] = (DistanceType)dcenters[i][k];
+
+		for (int i=0; i<cluster_k;i++)
+			radius_[i] = radiuses[i];
+
+		for(int i=0; i<cluster_k; i++){
 			int s = count[i];
 			DistanceType variance = 0;
             for (int j=0; j<size_; ++j) {
@@ -536,21 +645,97 @@ private:
                 }
             }
             variance /= s;
-			(*save)[i]->variance = variance;
+			variance_[i] = variance;
 		}
-		
-		//construct part_indices_
-		for(int i=0;i<size_;i++){
-			part_indices_[i][id] = belongs_to[i];
-		}
+
+		for(int i=0;i<size_;i++)
+			belongs_[i] = belongs_to[i];
+
+		for(int i=0;i<cluster_k;i++)
+			counts_[i] = count[i];
 
 		delete[] dcenters;
+
 	}
 
-	void loadSubVector(int id,ElementType ** allsub){
+	template<bool with_removed>
+	void findNeighborsWithRemoved(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
+	{
 	
-		for(int i=0;i<size_;i++)
-			getSubVector(id,allsub[i],point_[i]);
+		int checks = searchParams.checks_coarse_cluster;
+		findNN<with_removed>(result,vec,checks);
+	
+	}
+	
+	struct dist_index
+	{
+		int index;
+		DistanceType dis;
+		dist_index():index(0),dis(0){}
+		dist_index(int id,DistanceType d):index(id),dis(d){}
+		bool operator<(dist_index & other){
+			return dis<other.dis;
+		}
+		dist_index& operator=(dist_index& other){
+			index = other.index;
+			dis = other.dis;
+			return (*this);
+		}
+	};
+
+	template<bool with_removed>
+	void findNN(ResultSet<DistanceType>& result, const ElementType* vec,int checks_num)
+	{
+
+		int stride = veclen_/part_m_;
+
+		Heap<dist_index> index_dist(coarse_cluster_k_);
+		std::vector<dist_index> queue(coarse_cluster_k_);
+
+		for(int i=0;i<coarse_cluster_k_;i++){
+			queue[i].index = i;
+			queue[i].dis = distance_(coarse_index_[i]->pivot, vec, veclen_);
+			index_dist.insert(queue[i]);
+		}
+
+		std::vector<ElementType *> subvec(part_m_);
+		for(int i=0;i<part_m_;i++)
+		{
+			subvec[i] = new ElementType[stride];
+			getSubVector(i,subvec[i],vec);
+		}
+
+		for(int i=0;i<checks_num;i++)
+		{
+			dist_index now;
+			bool flag = index_dist.popMin(now);
+			if(!flag)
+				;
+
+			int id = now.index;
+			
+			for(int j=0;j<coarse_index_[id]->volume;j++)
+			{
+				int y_index = (coarse_index_[id]->container)[j];
+				if (with_removed) {
+					if (removed_points_.test(y_index)) continue;
+				}	
+				DistanceType d = 0;
+				for(int k=0;k<part_m_;k++)
+				{
+					d += distance_((lookup_table_[k][part_indices_[y_index][k]])->pivot,subvec[k],stride);
+				}
+				result.addPoint(d,y_index);
+			}
+		}
+
+	}
+
+	void loadSubVector(int id,int len,std::vector<ElementType *>& subMatrix,std::vector<ElementType *>& Matrix)
+	{
+	
+		for(int i=0;i<len;i++)
+			getSubVector(id,subMatrix[i],Matrix[i]);
 
 	}
 
@@ -584,12 +769,6 @@ private:
 		}
 	}
 
-	/*
-		params m:express gain mth part of vector;
-				m>=0,m<part_m_
-		params subVector:new subvector
-	*/
-	
 	void getSubVector(int m,ElementType * subVector,const ElementType * Vector)
 	{
 		int stride = veclen_/part_m_;
@@ -599,122 +778,14 @@ private:
 		}
 	}
 
-	template<bool with_removed>
-	void findNeighborsWithRemoved(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
-	{
+	void subVector(int len,ElementType * result,const ElementType * d1,const ElementType * d2){
 	
-		int searchMethod = searchParams.searchMethod;
-		if(searchMethod < 0)
-			searchMethod = -1;
-
-		/*
-			searchMethod == 1 ,using ADC
-			searchMethod == 0 ,using SDC
-			searchMethod == -1,undefined
-		*/
-
-		if(searchMethod == 1)
-		{
-			findNNADC<with_removed>(result,vec);
-		}
-		else{
-			findNNSDC<with_removed>(result,vec);
-		}
+		for(int i=0;i<len;i++)
+			result[i] = d1[i]-d2[i];
 	
 	}
 
-	template<bool with_removed>
-	void findNNADC(ResultSet<DistanceType>& result, const ElementType* vec)
-	{
-
-		int stride = veclen_/part_m_;
-
-		std::vector<ElementType*> subvec(part_m_);
-		for(int i=0;i<part_m_;i++)
-		{
-			subvec[i] = new ElementType[stride];
-			getSubVector(i,subvec[i],vec);
-		}
-
-		DistanceType wsq = result.worstDist();
-
-		DistanceType dis = 0;
-		DistanceType * cluster_head;
-		for(int i=0;i<size_;i++){
-			dis = 0;
-		    if (with_removed) {
-				if (removed_points_.test(i)) continue;
-            }
-			for(int j=0;j<part_m_;j++){
-				cluster_head = (*lookup_table_[j])[part_indices_[i][j]]->pivot;
-				dis += distance_(cluster_head, subvec[j], stride);
-			}
-			result.addPoint(dis, i);
-
-		}
-		for(int i=0;i<part_m_;i++)
-			delete[] subvec[i];
-	}
-
-	template<bool with_removed>
-	void findNNSDC(ResultSet<DistanceType>& result, const ElementType* vec)
-	{
-	
-		int stride = veclen_/part_m_;
-
-		std::vector<int> product_id(part_m_,0);
-		ElementType * subvec = new ElementType[stride];
-		DistanceType wsq = result.worstDist();
-
-		/*
-			compute the cluster index of vec
-		*/
-
-		double * best_dist = new double[part_m_];
-		memset(best_dist, 0, sizeof(double)*part_m_);
-		double dist = 0;
-
-		DistanceType * cluster_head;
-		for(int i=0;i<part_m_;i++){
-			dist = 0;
-			best_dist[i] = 0;
-			for(int j=0;j<cluster_k_;j++){
-				getSubVector(j,subvec,vec);
-				cluster_head = (*lookup_table_[i])[j]->pivot;
-				dist = distance_(cluster_head, subvec, stride);
-				if(dist < best_dist[i]){
-					best_dist[i] = dist;
-					product_id[i] = j;
-				}
-			}
-		}
-
-		/*
-			based on the paper,the distance should be saved in the lookup_table.
-			here, compute dist between two clusters.
-		*/
-
-		DistanceType * cluster_head_sq;
-		DistanceType * cluster_head_fe;
-		for(int i=0;i<size_;i++){
-			dist = 0;
-		    if (with_removed) {
-				if (removed_points_.test(i)) continue;
-            }
-			for(int j=0;j<part_m_;j++){
-				cluster_head_sq = (*lookup_table_[j])[product_id[j]]->pivot;
-				cluster_head_fe = (*lookup_table_[j])[part_indices_[i][j]]->pivot;
-				dis += distance_(cluster_head_fe, cluster_head_sq, stride);
-			}
-			result.addPoint(dis, i);
-
-		}
-
-		delete[] subvec;
-		delegate[] best_dist;
-	}
-
-	void swap(PQSingleIndex& other)
+	void swap(IVFADCIndex& other)
     {
     	std::swap(cluster_k, other.cluster_k);
     	std::swap(iterations_, other.iterations_);
@@ -725,13 +796,16 @@ private:
     	std::swap(chooseCenters_, other.chooseCenters_);
  
 		std::swap(rmatrix_, other.rmatrix_);
-		std::swap(lookup_table_, other.lookup_table_);
-		std::swap(part_m_, other.part_m_);
+		//std::swap(lookup_table_, other.lookup_table_);
 
 		std::swap(part_information_, other.part_information_);
-		std::swap(part_indices_, other.part_indices_);
+		//std::swap(part_indices_, other.part_indices_);
+
+		std::swap(coarse_cluster_k_, other.coarse_cluster_k_);
 
 	}
+
+private:
 
 	PooledAllocator pool_;
 
@@ -763,11 +837,14 @@ private:
 
 	LookupTable lookup_table_;
 
-	USING_BASECLASS_SYMBOLS
+	coarse_table coarse_index_;
+
+	int coarse_cluster_k_;
 
 };
+	
+
 
 }
 
-
-#endif /*FLANN_PQSINGLE_INDEX_H*/
+#endif /*FLANN_IVFADC_INDEX_H*/
