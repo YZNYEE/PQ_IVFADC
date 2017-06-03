@@ -22,32 +22,32 @@ using namespace flann;
 int main(int argc, char** argv)
 {
   int nn = 100;
-	//Logger::setLevel(5);
+  Logger::setLevel(5);
   Matrix<float> dataset;
-	Matrix<float> query;
+  Matrix<float> query;
   
   load_from_file(dataset, "D:\\sift\\sift\\sift_min10.hdf5","dataset");
   load_from_file(query, "D:\\sift\\sift\\sift_min10.hdf5","dataset");
     
   Matrix<int> indices(new int[query.rows*nn], query.rows, nn);
-	Matrix<float> dists(new float[query.rows*nn], query.rows, nn);
+  Matrix<float> dists(new float[query.rows*nn], query.rows, nn);
   
   flann::PQSingleIndexParams PQIP(256,8,0,12);
-	PQIndex<L2<float>> index(dataset, PQIP);
+  PQIndex<L2<float>> index(dataset, PQIP);
 
-	index.buildIndex();
+  index.buildIndex();
 
-	flann::PQSearchParams PQSP;
-	index.knnSearch(query,indices,dists,nn,PQSP);
+  flann::PQSearchParams PQSP;
+  index.knnSearch(query,indices,dists,nn,PQSP);
   	
   flann::save_to_file(indices,"result.hdf5","result");
 
   delete[] dataset.ptr();
   delete[] query.ptr();
-	delete[] indices.ptr();
-	delete[] dists.ptr();
+  delete[] indices.ptr();
+  delete[] dists.ptr();
     
-    return 0;
+  return 0;
 }
 ```
 
