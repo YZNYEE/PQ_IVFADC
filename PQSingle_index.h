@@ -749,6 +749,7 @@ private:
 		int stride = veclen_/part_m_;
 
 		std::vector<ElementType*> subvec(part_m_);
+
 		for(int i=0;i<part_m_;i++)
 		{
 			subvec[i] = new ElementType[stride];
@@ -761,7 +762,7 @@ private:
 		distance_lookup_table.resize(part_m_);
 		for(int i=0;i<part_m_;i++)
 			distance_lookup_table[i].resize(cluster_k_);
-		
+
 		for(int i=0;i<part_m_;i++)
 		{
 			for(int j=0;j<cluster_k_;j++)

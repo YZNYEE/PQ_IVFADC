@@ -45,7 +45,7 @@ struct IVFADCIndexParams : public IndexParams{
 		(*this)["part_m"] = part_m;
 		(*this)["method"] = method;
 		(*this)["iterator"] = iterator;
-		(*this)["center_init"] = cexnters_init;
+		(*this)["center_init"] = centers_init;
 
 		(*this)["coarse_cluster_k"] = coarse_cluster_k;
 		//(*this)["rmatrix"] = rmatrix;
@@ -204,6 +204,7 @@ public:
 
     	if (Archive::is_loading::value) {
 			lookup_table_.resize(part_m_);
+
 			for(int i=0;i<part_m_;i++){
 				if(lookup_table_[i]!=NULL)
 					lookup_table_[i]->resize(cluster_k_);
@@ -215,22 +216,26 @@ public:
 			}
 
 			for(int i=0;i<coarse_cluster_k_;i++)
+			{
+				coarse_index_.resize(coarse_cluster_k_);
 				if(coarse_index_[i]==NULL)
 					coarse_index_[i] = new(pool_) coarse_node();
-    	}
+			}
+
+		}
 
 		for(int i=0;i<part_m_;i++)
 			for(int j=0;j<cluster_k_;j++)
 				ar & *((*lookup_table_[i])[j]);
 
 		for(int i=0;i<coarse_cluster_k_;i++)
-			ar & coarse_index_[i];
+			ar & *(coarse_index_[i]);
 
 		ar & part_indices_;
 		ar & part_information_;
 
     	if (Archive::is_loading::value) {
-            index_params_["algorithm"] = -100;
+            index_params_["algorithm"] = -101;
             index_params_["cluster_k"] = cluster_k_;
 			index_params_["part_m"] = part_m_;
             index_params_["iterator"] = iterations_;
@@ -429,7 +434,6 @@ private:
 
     		if (Archive::is_loading::value) {
     			pivot = new DistanceType[obj->veclen_];
-    			contains.resize(volume)
 			}
 
 			ar & serialization::make_binary_object(pivot, obj->veclen_*sizeof(DistanceType));

@@ -102,7 +102,7 @@ public:
 
 		Logger::info("start searching\n");
 		t.reset();
-		t,start();
+		t.start();
 		index.knnSearch(queries,indices,dists,knn,params);
 		t.stop();
 		searchtime_ = (float)t.value;
@@ -110,6 +110,44 @@ public:
 
 		compute_precisions<size_t>(indices, truth_indices);
 
+	}
+
+	void evaulateSearch(const Matrix<ElementType>& queries,
+    		Matrix<size_t>& indices,
+			Matrix<size_t>& truth_indices,
+    		Matrix<DistanceType>& dists,
+    		size_t knn,
+    		const SearchParams& params)
+	{
+		StartStopTimer t;
+		Logger::info("start searching\n");
+		t.reset();
+		t.start();
+		index.knnSearch(queries,indices,dists,knn,params);
+		t.stop();
+		searchtime_ = (float)t.value;
+		Logger::info("end searching\n");
+
+		compute_precisions<size_t>(indices, truth_indices);
+	}
+
+	void evaulateSearch(const Matrix<ElementType>& queries,
+    		Matrix<int>& indices,
+			Matrix<int>& truth_indices,
+    		Matrix<DistanceType>& dists,
+    		size_t knn,
+    		const SearchParams& params)
+	{
+		StartStopTimer t;
+		Logger::info("start searching\n");
+		t.reset();
+		t.start();
+		index.knnSearch(queries,indices,dists,knn,params);
+		t.stop();
+		searchtime_ = (float)t.value;
+		Logger::info("end searching\n");
+
+		compute_precisions<int>(indices, truth_indices);
 	}
 
 	void show_result()
@@ -135,6 +173,7 @@ private:
 
 		size_t obj;
 		size_t count = 0;
+		size_t count_10 = 0;
 		for(int i=0;i<rows;i++)
 		{
 			obj = truth_indices[i][0];
@@ -147,8 +186,21 @@ private:
 					break;
 				}
 			}
+			if(indices.rows>=10)
+			{
+				for(int j=0;j<10;j++)
+				{
+					size_t index = indices[i][j];
+					if( index == obj )
+					{
+						count_10++;
+						break;
+					}
+				}
+			}
 		}
 		precision_ = (float)count/rows;
+		precision_10 = (float)count_10/rows;
 	}
 
 public:
@@ -157,6 +209,7 @@ public:
 	float memory_weight_;
 
 	float precision_;
+	float precision_10;
 	float searchtime_;
 	float buildtime_;
 	float memory_;

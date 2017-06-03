@@ -27,7 +27,7 @@ public:
 	typedef typename Distance::ResultType DistanceType;
 
 	TestPQModel(Matrix<ElementType> & inputData, const IndexParams & params, const IndexParams & cost_params,Distance d = Distance())
-		:pq_params_(params),cost_params_(cost_params),kd_params_(kd_params),dataset_(inputData),distance_(d)
+		:pq_params_(params),cost_params_(cost_params),dataset_(inputData),distance_(d)
 	{
 
 		pq_model_ = new ComputeCostPQ<Distance>(dataset_,pq_params_,cost_params_);
@@ -36,10 +36,8 @@ public:
 
 	void evaulate(const Matrix<ElementType>& queries,
     		Matrix<int>& pq_indices,
-			Matrix<int>& kd_indices,
 			Matrix<int>& truth_indices,
     		Matrix<DistanceType>& pq_dists,
-			Matrix<DistanceType>& kd_dists,
     		int knn,
     		const SearchParams& pq_params)
 	{
@@ -57,10 +55,8 @@ public:
 
 	void evaulate(const Matrix<ElementType>& queries,
     		Matrix<size_t>& pq_indices,
-			Matrix<size_t>& kd_indices,
 			Matrix<size_t>& truth_indices,
     		Matrix<DistanceType>& pq_dists,
-			Matrix<DistanceType>& kd_dists,
     		size_t knn,
     		const SearchParams& pq_params)
 	{
@@ -73,6 +69,26 @@ public:
 		*/
 	}
 
+	void evaulateSearch(const Matrix<ElementType>& queries,
+    		Matrix<int>& pq_indices,
+			Matrix<int>& truth_indices,
+    		Matrix<DistanceType>& pq_dists,
+    		int knn,
+    		const SearchParams& pq_params)
+	{
+		pq_model_->evaulateSearch(queries,pq_indices,truth_indices,pq_dists,knn,pq_params);
+	}
+
+	void evaulateSearch(const Matrix<ElementType>& queries,
+    		Matrix<size_t>& pq_indices,
+			Matrix<size_t>& truth_indices,
+    		Matrix<DistanceType>& pq_dists,
+    		size_t knn,
+    		const SearchParams& pq_params)
+	{
+		pq_model_->evaulateSearch(queries,pq_indices,truth_indices,pq_dists,knn,pq_params);
+	}
+
 	void show_result()
 	{
 		Logger::info("\nPQSingleIndexParams::\n");
@@ -82,7 +98,7 @@ public:
 		//Logger::info("\nKDTreeSearchParams::\n");
 		//print_params(kdtree_->bestSearchParams_);
 		Logger::info("| algorithm | precision | buildtime(s) | searchtime(s) | memory_use(b) |\n");
-		std::cout<<"  PQSingle  "<<pq_model_->precision_<<"   "<<pq_model_->buildtime_<<"   "<<pq_model_->searchtime_
+		std::cout<<"  PQSingle  "<<pq_model_->precision_<<"/"<<pq_model_->precision_10<<"   "<<pq_model_->buildtime_<<"   "<<pq_model_->searchtime_
 				<<"   "<<pq_model_->memory_<<std::endl;
 	//	std::cout<<"  KDTreeIn  "<<kdtree_->truth_precision_<<"   "<<kdtree_->buildtimecost_<<"   "<<kdtree_->searchtimecost_
 	//				<<"   "<<kdtree_->memory_<<std::endl;
@@ -100,9 +116,14 @@ public:
 
 	void save_pq_model(std::string filename)
 	{
-		(pq_model_->index).save(sfilename);
+		(pq_model_->index).save(filename);
 	}
 
+
+	void load_pq_model(std::string filename)
+	{
+		(pq_model_->index).load(filename);
+	}
 
 	template<typename Archive>
 	void serialize(Archive& ar)
@@ -111,6 +132,7 @@ public:
 		ar & pq_model_->memory_weight_;
 
 		ar & pq_model_->precision_;
+		ar & pq_model_->precision_10;
 		
 		ar & pq_model_->buildtime_;
 		ar & pq_model_->searchtime_;
