@@ -10,7 +10,8 @@ Precondition
 --------------
 PQ_algorithm
 --------------
-该软件包实现了一个简单的Product Quantization算法。实现该算法的主要文件为`PQSingle_index.h`。为了统一接口，所以额外地实现了两个文件`PQ_indices.h`,`PQIndex.h`。这两个文件保证了新添加的PQ算法与原FLANN软件包提供的kdtree，kmeans等算法相似的接口，但需要做些许调整。一个简单是实例：<br>
+该软件包实现了一个简单的Product Quantization算法。实现该算法的主要文件为`PQSingle_index.h`。为了统一接口，所以额外地实现了两个文件`PQ_indices.h`,`PQIndex.h`。这两个文件保证了新添加的PQ算法与原FLANN软件包提供的kdtree，kmeans等算法使用相似的接口，所以需要做些许调整。<br>
+一个简单是实例：<br>
 ```c++
 #include <flann/flann.hpp> 
 #include <flann/io/hdf5.h> 
