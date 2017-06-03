@@ -14,6 +14,8 @@
 
 #include "flann/algorithms/all_indices.h"
 #include "PQ_indices.h"
+#include "PQSingle_index.h"
+#include "IVFADC_index.h"
 
 namespace flann
 {
@@ -26,7 +28,7 @@ public:
     typedef typename Distance::ResultType DistanceType;
     typedef NNIndex<Distance> IndexType;
 
-    Index(const IndexParams& params, Distance distance = Distance() )
+    PQIndex(const IndexParams& params, Distance distance = Distance() )
         : index_params_(params)
     {
         int mark = get_param<int>(params,"algorithm");
@@ -39,40 +41,41 @@ public:
         }
         else {
         	int mark = get_param<int>(params, "algorithm");
-            nnIndex_ = create_index_by_mark<Distance>(mark, features, params, distance);
+            nnIndex_ = create_PQ_index_by_mark<Distance>(mark, features, params, distance);
         }
     }
 
 
-    Index(const Matrix<ElementType>& features, const IndexParams& params, Distance distance = Distance() )
+    PQIndex(const Matrix<ElementType>& features, const IndexParams& params, Distance distance = Distance() )
         : index_params_(params)
     {
         int mark = get_param<int>(params,"algorithm");
         loaded_ = false;
-
+		//std::cout<<"inmark "<<mark<<std::endl;
         if (mark == FLANN_INDEX_SAVED) {
             nnIndex_ = load_saved_index(features, get_param<std::string>(params,"filename"), distance);
             loaded_ = true;
         }
         else {
-        	flann_algorithm_t index_type = get_param<flann_algorithm_t>(params, "algorithm");
-            nnIndex_ = create_index_by_mark<Distance>(mark, features, params, distance);
+			//int index = get_param<int>(params, "algorithm");
+			//std::cout<<"creating PQ index"<<std::endl;
+            nnIndex_ = create_PQ_index_by_mark<Distance>(mark, features, params, distance);
         }
     }
 
 
-    Index(const Index& other) : loaded_(other.loaded_), index_params_(other.index_params_)
+    PQIndex(const PQIndex& other) : loaded_(other.loaded_), index_params_(other.index_params_)
     {
     	nnIndex_ = other.nnIndex_->clone();
     }
 
-    Index& operator=(Index other)
+    PQIndex& operator=(PQIndex other)
     {
     	this->swap(other);
     	return *this;
     }
 
-    virtual ~Index()
+    virtual ~PQIndex()
     {
         delete nnIndex_;
     }
@@ -83,14 +86,66 @@ public:
     void buildIndex()
     {
         if (!loaded_) {
+			//std::cout<<"buildindex"<<std::endl;
             nnIndex_->buildIndex();
         }
     }
+
+	void getLookupTable(int id,std::vector<double *> &centers)
+	{
+		int mark = get_param<int>(index_params_,"algorithm");
+		if(mark == -100)
+			((PQSingleIndex<Distance> *)nnIndex_)->getLookupTable(id, centers);
+		if(mark == -101)
+			((IVFADCIndex<Distance> *)nnIndex_)->getLookupTable(id, centers);
+	}
+
+	void getIndices(int id,std::vector<int> &indices)
+	{
+		int mark = get_param<int>(index_params_,"algorithm");
+		if(mark == -100)
+			((PQSingleIndex<Distance> *)nnIndex_)->getIndices(id,indices);
+		if(mark == -101)
+			((IVFADCIndex<Distance> *)nnIndex_)->getIndices(id,indices);
+	}
+
+	void getFeature(int id,std::vector<double *> & feature)
+	{
+		int mark = get_param<int>(index_params_,"algorithm");
+		if(mark == -100)
+			((PQSingleIndex<Distance> *)nnIndex_)->getFeature(id,feature);
+		if(mark == -101)
+			((IVFADCIndex<Distance> *)nnIndex_)->getFeature(id,feature);
+	}
 
     void buildIndex(const Matrix<ElementType>& points)
     {
     	nnIndex_->buildIndex(points);
     }
+
+	int getStride() const
+	{
+		int mark = get_param<int>(index_params_,"algorithm");
+		if(mark == -100)
+			return ((PQSingleIndex<Distance> *)nnIndex_)->getStride();
+		if(mark == -101)
+			((IVFADCIndex<Distance> *)nnIndex_)->getStride();
+	}
+
+	void getCoarseCenter(std::vector<double *> & ccenter)
+	{
+		((IVFADCIndex<Distance> *)nnIndex_)->getCoarseCenter(ccenter);
+	}
+
+	void getAllFeature(std::vector<double *> & all)
+	{
+		((IVFADCIndex<Distance> *)nnIndex_)->getAllFeature(all);
+	}
+
+	void getCoarseIndices(std::vector<int> & cindices)
+	{
+		((IVFADCIndex<Distance> *)nnIndex_)->getCoarseIndices(cindices);
+	}
 
     void addPoints(const Matrix<ElementType>& points, float rebuild_threshold = 2)
     {
@@ -130,6 +185,16 @@ public:
         fclose(fout);
     }
 
+	void load(std::string filename)
+	{
+		FILE* fout = fopen(filename.c_str(), "rb");
+        if (fout == NULL) {
+            throw FLANNException("Cannot open file");
+        }
+        nnIndex_->loadIndex(fout);
+        fclose(fout);
+	}
+
     /**
      * \returns number of features in this index.
      */
@@ -151,7 +216,7 @@ public:
      */
     int getType() const
     {
-        return nnIndex_->getType();
+        return nnIndex_->getType_PQ();
     }
 
     /**
@@ -327,7 +392,7 @@ private:
 
         IndexParams params;
         params["algorithm"] = header.index_type;
-        IndexType* nnIndex = create_index_by_mark<Distance>(header.index_type, dataset, params, distance);
+        IndexType* nnIndex = create_PQ_index_by_mark<Distance>(header.index_type, dataset, params, distance);
         rewind(fin);
         nnIndex->loadIndex(fin);
         fclose(fin);
@@ -335,7 +400,7 @@ private:
         return nnIndex;
     }
 
-    void swap( Index& other)
+    void swap( PQIndex& other)
     {
     	std::swap(nnIndex_, other.nnIndex_);
     	std::swap(loaded_, other.loaded_);

@@ -27,19 +27,16 @@
 #include "flann/util/saving.h"
 #include "flann/util/logger.h"
 
+#include "params_PQ.h"
+//#include "check.h"
+
 namespace flann{
 
-enum part_method{
-	NATURAL = 0,
-	RANDOM = 1,
-	STRUCTURED = 2
 
-}; 
+struct IVFADCIndexParams : public IndexParams{
 
-struct PQSingleIndexParams : public IndexParams{
-
-	PQSingleIndexParams(int cluster_k = 32,int part_m = 8,int method = 0,int iterator = 11,
-						int coarse_cluster_k = 1000,std::vector<size_t> * rmatrix = NULL,
+	IVFADCIndexParams(int cluster_k = 32,int part_m = 8,int method = 0,int iterator = 11,
+						int coarse_cluster_k = 1000,
 						flann_centers_init_t centers_init = FLANN_CENTERS_RANDOM)
 	{
 	
@@ -48,10 +45,10 @@ struct PQSingleIndexParams : public IndexParams{
 		(*this)["part_m"] = part_m;
 		(*this)["method"] = method;
 		(*this)["iterator"] = iterator;
-		(*this)["center_init"] = centers_init;
+		(*this)["center_init"] = cexnters_init;
 
 		(*this)["coarse_cluster_k"] = coarse_cluster_k;
-		(*this)["rmatrix"] = rmatrix;
+		//(*this)["rmatrix"] = rmatrix;
 
 	}
 };
@@ -63,32 +60,36 @@ class IVFADCIndex : public NNIndex<Distance>
 {
 public:
 	typedef typename Distance::ElementType ElementType;
-	typedef typename Distance::DistanceType DistanceType;
+	typedef typename Distance::ResultType DistanceType;
 
 	typedef NNIndex<Distance> BaseClass;
 
 	typedef bool needs_vector_space_distance;
 
-	int getType() const{
+	int getType_PQ() const{
 		return -101;
+	}
+
+	flann_algorithm_t getType() const{
+		return FLANN_INDEX_SAVED;
 	}
 
 	IVFADCIndex(const Matrix<ElementType>& inputData, const IndexParams& params = PQSingleIndexParams(),
                 Distance d = Distance())
 				: BaseClass(params,d), memoryCounter_(0)
 	{
-		cluster_k_ = get_params(params,"cluster_k",32);
+		cluster_k_ = get_param(params,"cluster_k",32);
 		part_m_ = get_param(params,"part_m",8);
-        iterations_ = get_param(params,"iterations",11);
-		rmatrix_ = get_param(params,"rmatrix",NULL);
+        iterations_ = get_param(params,"iterator",11);
+		//rmatrix_ = get_param(params,"rmatrix",NULL);
 
-		coarse_cluster_k_ = get_params(params,"coarse_cluster_k_",1000);
+		coarse_cluster_k_ = get_param(params,"coarse_cluster_k",1000);
 
 		if (iterations_<0) {
             iterations_ = (std::numeric_limits<int>::max)();
         }
 
-		method_ = get_params(params,"method",0);
+		method_ = get_param(params,"method",0);
 		centers_init_  = get_param(params,"centers_init",FLANN_CENTERS_RANDOM);
 
 		initCenterChooser();
@@ -98,34 +99,33 @@ public:
 
 	}
 
-	IVFADCIndex(const IndexParams& params = PQSingleIndexParams(), Distance d = Distance())
+	IVFADCIndex(const IndexParams& params = IVFADCIndexParams(), Distance d = Distance())
         : BaseClass(params, d),  memoryCounter_(0)
     {
 		cluster_k_ = get_params(params,"cluster_k",32);
 		part_m_ = get_param(params,"part_m",8);
-        iterations_ = get_param(params,"iterations",11);
-		rmatrix_ = get_param(params,"rmatrix",NULL);
+        iterations_ = get_param(params,"iterator",11);
+		//rmatrix_ = get_param(params,"rmatrix",NULL);
 		
-		coarse_cluster_k_ = get_params(params,"coarse_cluster_k",1000);
+		coarse_cluster_k_ = get_param(params,"coarse_cluster_k",1000);
 		if (iterations_<0) {
             iterations_ = (std::numeric_limits<int>::max)();
         }
 
-		method_ = get_params(params,"method",0);
+		method_ = get_param(params,"method",0);
 		centers_init_  = get_param(params,"centers_init",FLANN_CENTERS_RANDOM);
 
 		initCenterChooser();
     }
 
-	IVFADCIndex(const KMeansIndex& other) : BaseClass(other),
-    	    (other.branching_),
+	IVFADCIndex(const IVFADCIndex& other) : BaseClass(other),
     		iterations_(other.iterations_),
     		centers_init_(other.centers_init_),
     		cluster_k_(other.cluster_k_),
 			part_m_(other.part_m_),
 			method_(other.method_),
-    		memoryCounter_(other.memoryCounter_)
-			rmatrix_(other.rmatrix)
+    		memoryCounter_(other.memoryCounter_),
+			rmatrix_(other.rmatrix_),
 			coarse_cluster_k_(other.coarse_cluster_k_)
 	{
     	initCenterChooser();
@@ -191,17 +191,20 @@ public:
     	ar & cluster_k_;
 		ar & part_m_;
 		ar & method_;
-    	ar & iteration_;
+    	ar & iterations_;
     	ar & memoryCounter_;
     	ar & centers_init_;
 		ar & coarse_cluster_k_;
+
+		typedef IVFADCIndex<Distance> Index;
+		Index* obj = static_cast<Index*>(ar.getObject());
 
 		if(method_ == 2)
 			ar & serialization::make_binary_object(rmatrix_, obj->veclen_*sizeof(int));
 
     	if (Archive::is_loading::value) {
 			lookup_table_.resize(part_m_);
-			for(int i=0;i<size_;i++){
+			for(int i=0;i<part_m_;i++){
 				if(lookup_table_[i]!=NULL)
 					lookup_table_[i]->resize(cluster_k_);
 				else
@@ -216,7 +219,7 @@ public:
 					coarse_index_[i] = new(pool_) coarse_node();
     	}
 
-		for(int i=0;i<size_;i++)
+		for(int i=0;i<part_m_;i++)
 			for(int j=0;j<cluster_k_;j++)
 				ar & *((*lookup_table_[i])[j]);
 
@@ -230,11 +233,13 @@ public:
             index_params_["algorithm"] = -100;
             index_params_["cluster_k"] = cluster_k_;
 			index_params_["part_m"] = part_m_;
-            index_params_["iterations"] = iterations_;
+            index_params_["iterator"] = iterations_;
             index_params_["centers_init"] = centers_init_;
             index_params_["method"] = method_;
 			index_params_["coarse_cluster_k"] = coarse_cluster_k_;
     	}
+
+
     }
 
 	void saveIndex(FILE* stream)
@@ -260,19 +265,129 @@ public:
     	}
 	}
 
-	void getLookupTable(){};
+	void getLookupTable(int id,std::vector<double *> & sublook)
+	{
+		if(sublook.size() != cluster_k_)
+			sublook.resize(cluster_k_,NULL);
+		for(int i=0;i<cluster_k_;i++)
+		{
+			sublook[i] = new double[veclen_/part_m_];
+		}
+		for(int i=0;i<cluster_k_;i++)
+		{
+			for(int j=0;j<veclen_/part_m_;j++)
+			{
+				//std::cout<<"i: "<<i<<" j: "<<j<<std::endl;
+				sublook[i][j] = ((*lookup_table_[id])[i])->pivot[j];
+			}
+		}
+	};
+
+	void getIndices(int id,std::vector<int> & indices)
+	{
+		if(indices.size() != size_)
+		{
+			indices.resize(size_);
+		}
+
+		for(int i=0;i<size_;i++)
+		{
+			indices[i] = part_indices_[i][id];
+		}
+	}
+
+	void getFeature(int id,std::vector<double *> & subfeature)
+	{
+		int stride = veclen_/part_m_;
+		if(subfeature.size() != size_)
+		{
+			subfeature.resize(size_);
+		}
+		for(int i=0;i<size_;i++)
+		{
+			subfeature[i] = new double[stride];
+		}
+
+		for(int i=0;i<size_;i++)
+		{
+			for(int j=0;j<stride;j++)
+			{
+				subfeature[i][j] = points_[i][part_information_[j+id*stride]];
+			}
+		}
+	}
+
+	void getCoarseCenter(std::vector<double *> & ccenter)
+	{
+		ccenter.resize(coarse_index_.size());
+		for(int i=0;i<coarse_index_.size();i++)
+		{
+			ccenter[i] = new double[veclen_];
+			for(int j=0;j<veclen_;j++)
+				ccenter[i][j] = coarse_index_[i]->pivot[j];
+		}
+	}
+
+	void getAllFeature(std::vector<double *> & all)
+	{
+		int stride = veclen_;
+		if(all.size() != size_)
+		{
+			all.resize(size_);
+		}
+		for(int i=0;i<size_;i++)
+		{
+			all[i] = new double[stride];
+		}
+
+		for(int i=0;i<size_;i++)
+		{
+			for(int j=0;j<stride;j++)
+			{
+				all[i][j] = points_[i][j];
+			}
+		}
+	
+	}
+
+	void getCoarseIndices(std::vector<int> & cindices)
+	{
+		if(cindices.size()!=size_)
+		{
+			cindices.resize(size_);
+		}
+		for(int i=0;i<coarse_cluster_k_;i++)
+		{
+			for(int j=0;j<coarse_index_[i]->volume;j++)
+			{
+				cindices[coarse_index_[i]->container[j]] = i;
+			}
+		}
+	}
+
+	int getStride() const
+	{
+		return veclen_/part_m_;
+	}
 
 protected:
 
 	void buildIndexImpl()
     {
+
+		//std::cout<<"start building"<<std::endl;
         if (cluster_k_<2) {
             throw FLANNException("cluster_k_ factor must be at least 2");
         }
 	
 		partMatrix(); // to part matrix based on method
+
+		Logger::info("===============================\n");
+		Logger::info("start computing coarse clusters\n");
 		computeCoarseClustering(); // to compute clustering centor and initial lookup_table
+		Logger::info("start computing rest vector clusters\n");
 		computeRestClustering();
+		Logger::info("end up building index");
 
 	}
 
@@ -293,6 +408,8 @@ private:
 		std::vector<int> container;
 
 		int volume;
+
+		coarse_node(){}
 
 		coarse_node(int num):container(num),volume(num){}
 
@@ -340,7 +457,7 @@ private:
 		template<typename Archive>
 		void serialize(Archive& ar){
 		
-			typedef PQSingleIndex<Distance> Index;
+			typedef IVFADCIndex<Distance> Index;
 			Index* obj = static_cast<Index*>(ar.getObject());
 
     		if (Archive::is_loading::value) {
@@ -363,14 +480,20 @@ private:
 	typedef std::vector<single_cluster*> LookupTable;
 
 	void freeIndex(){
-		for(int i=0;i<size_;i++)
-			for(int j=0;j<cluster_k_;j++){
-				(*lookup_table_[i])[j]->~Node();
-				(*lookup_table_[i])[j] = NULL;
+		if(lookup_table_.size()>0)
+		{
+			for(int i=0;i<size_;i++)
+				for(int j=0;j<cluster_k_;j++){
+					(*lookup_table_[i])[j]->~Node();
+					(*lookup_table_[i])[j] = NULL;
+				}
+		}
+		if(coarse_index_.size()>0)
+		{
+			for(int i=0;i<coarse_cluster_k_;i++){
+				coarse_index_[i]->~coarse_node();
+				coarse_index_[i] = NULL;
 			}
-		for(int i=0;i<coarse_cluster_k_;i++){
-			coarse_index_[i]->~coarse_node();
-			coarse_index_[i] = NULL;
 		}
 		pool_.free();
 	}
@@ -386,14 +509,15 @@ private:
 		for(int i=0;i<coarse_cluster_k_;i++)
 		{
 			pivots[i] = new ElementType[veclen_];
-			memoryCounter_ += veclen_*sizeof(DistanceType);
 		}
 		std::vector<double> radius(coarse_cluster_k_);
 		std::vector<double> variance(coarse_cluster_k_);
 		std::vector<int> belongs(size_);
 		std::vector<int> counts(coarse_cluster_k_);
 
-		computeClustering(point_,veclen_,indices,coarse_cluster_k_,pivots,radius,variance,belongs,counts);
+		Logger::info("finish initializing and start computing\n");
+		computeClustering(points_,veclen_,indices,coarse_cluster_k_,pivots,radius,variance,belongs,counts);
+		Logger::info("end up computing and store the result\n");
 
 		coarse_index_.resize(coarse_cluster_k_);
 		for(int i=0;i<coarse_cluster_k_;i++){
@@ -401,8 +525,9 @@ private:
 			coarse_index_[i]->radius = radius[i];
 			coarse_index_[i]->variance = variance[i];
 			coarse_index_[i]->pivot = new DistanceType[veclen_];
+			memoryCounter_ += veclen_*sizeof(DistanceType);
 			for(int j=0;j<veclen_;j++)
-				(coarse_index_[i]->pivot)[j] = (DistanceType)pivots[j];
+				(coarse_index_[i]->pivot)[j] = (DistanceType)pivots[i][j];
 		}
 
 		std::vector<int> pos(coarse_cluster_k_,0);
@@ -419,7 +544,7 @@ private:
 			sum+=coarse_index_[i]->volume;
 		}
 
-		for(int i=0;i<coarse_cluster_k_)
+		for(int i=0;i<coarse_cluster_k_;i++)
 			delete[] pivots[i];
 		delete[] indices;
 
@@ -439,7 +564,7 @@ private:
 		for(int i=0;i<coarse_cluster_k_;i++)
 			for(int j=0;j<coarse_index_[i]->volume;j++)
 				for(int k=0;k<veclen_;k++)
-					restvec[(coarse_index_[i]->container)[j]][k] = point_[(coarse_index_[i]->container)[j]][k]
+					restvec[(coarse_index_[i]->container)[j]][k] = points_[(coarse_index_[i]->container)[j]][k]
 																	- (coarse_index_[i]->pivot)[k];
 
 		std::vector<ElementType *> allsub(size_);
@@ -474,8 +599,11 @@ private:
 		for(int i=0;i<part_m_;i++)
 		{
 			loadSubVector(i,size_,allsub,restvec);
+			if(Logger::getLevel() >= FLANN_LOG_INFO)
+				std::cout<<"computing "<<i<<"/"<<part_m_<<" cluster"<<std::endl;
 			computeClustering(allsub,stride,indices,cluster_k_,pivots,radius,variance,belongs,counts);
 
+			Logger::info("store the result\n");
 			// save part_indices
 			for(int j=0;j<size_;j++)
 				part_indices_[j][i] = belongs[j];
@@ -493,15 +621,16 @@ private:
 		}
 
 
-		for(int i=0;i<cluster_k_)
+		for(int i=0;i<cluster_k_;i++)
 			delete[] pivots[i];
 		for(int i=0;i<size_;i++){
-			delete[] all_sub[i];
+			delete[] allsub[i];
 			delete[] restvec[i];
 		}
 		delete[] indices;
 
 	}
+
 
 
 	/*
@@ -543,7 +672,7 @@ private:
             DistanceType sq_dist = distance_(data[indices[i]], dcenters[0], stride);
             belongs_to[i] = 0;
             for (int j=1; j<cluster_k; ++j) {
-                DistanceType new_sq_dist = distance_(allsub[data[i]], dcenters[j], stride);
+                DistanceType new_sq_dist = distance_(data[indices[i]], dcenters[j], stride);
                 if (sq_dist>new_sq_dist) {
                     belongs_to[i] = j;
                     sq_dist = new_sq_dist;
@@ -553,18 +682,23 @@ private:
                 radiuses[belongs_to[i]] = sq_dist;
             }
             count[belongs_to[i]]++;
+
+			//std::cout<<i<<" belongs to "<<belongs_to[i]<<" "<<count[belongs_to[i]]<<std::endl;;
         }
 
 		bool converged = false;
 		int iteration = 0;
-		while(!converged && iteration<iterations){
+		while(!converged && iteration<iterations_){
 			converged = true;
 			iteration++;
 
 			//compute the new cluster centers;
 
+			if(Logger::getLevel() >= FLANN_LOG_INFO )
+				std::cout<<"iterate "<<iteration<<"/"<<iterations_<<std::endl;
+
 			for(int i=0;i<cluster_k;i++){
-			    memset(dcenters[i],0,sizeof(double)*clusterk_);
+			    memset(dcenters[i],0,sizeof(double)*stride);
                 radiuses[i] = 0;
 			}
 			for (int i=0; i<size_; ++i) {
@@ -574,7 +708,7 @@ private:
                     center[k] += vec[k];
                 }
             }
-			for (int i=0; i<cluster_k_; ++i) {
+			for (int i=0; i<cluster_k; ++i) {
                 int cnt = count[i];
                 double div_factor = 1.0/cnt;
                 for (size_t k=0; k<stride; ++k) {
@@ -611,6 +745,7 @@ private:
                 if (count[i]==0) {
                     int j = (i+1)%cluster_k;
                     while (count[j]<=1) {
+						//std::cout<<count[j]<<std::endl;
                         j = (j+1)%cluster_k;
                     }
 
@@ -631,7 +766,7 @@ private:
 
 		for (int i=0; i<cluster_k; ++i) 
             for (size_t k=0; k<stride; ++k) 
-                pivots[i][k] = (DistanceType)dcenters[i][k];
+                pivots_[i][k] = (DistanceType)dcenters[i][k];
 
 		for (int i=0; i<cluster_k;i++)
 			radius_[i] = radiuses[i];
@@ -641,7 +776,7 @@ private:
 			DistanceType variance = 0;
             for (int j=0; j<size_; ++j) {
                 if (belongs_to[j]==i) {
-                    variance += distance_(dcenters[i], allsub[indices[j]], stride);
+                    variance += distance_(dcenters[i], data[indices[j]], stride);
                 }
             }
             variance /= s;
@@ -654,7 +789,7 @@ private:
 		for(int i=0;i<cluster_k;i++)
 			counts_[i] = count[i];
 
-		delete[] dcenters;
+		delete[] dcenters.ptr();
 
 	}
 
@@ -662,7 +797,8 @@ private:
 	void findNeighborsWithRemoved(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
 	{
 	
-		int checks = searchParams.checks_coarse_cluster;
+		PQSearchParams * now = (PQSearchParams *)(&searchParams);
+		int checks = now->checks_coarse_cluster;
 		findNN<with_removed>(result,vec,checks);
 	
 	}
@@ -673,10 +809,11 @@ private:
 		DistanceType dis;
 		dist_index():index(0),dis(0){}
 		dist_index(int id,DistanceType d):index(id),dis(d){}
-		bool operator<(dist_index & other){
+		bool operator<(const dist_index & other) const
+		{
 			return dis<other.dis;
 		}
-		dist_index& operator=(dist_index& other){
+		dist_index& operator=(const dist_index& other){
 			index = other.index;
 			dis = other.dis;
 			return (*this);
@@ -684,7 +821,7 @@ private:
 	};
 
 	template<bool with_removed>
-	void findNN(ResultSet<DistanceType>& result, const ElementType* vec,int checks_num)
+	void findNN(ResultSet<DistanceType>& result, const ElementType* vec,int checks_num ) const
 	{
 
 		int stride = veclen_/part_m_;
@@ -698,12 +835,19 @@ private:
 			index_dist.insert(queue[i]);
 		}
 
-		std::vector<ElementType *> subvec(part_m_);
+		ElementType * restvec;
+		std::vector<ElementType *> restsubvec(part_m_);
+
+		restvec = new ElementType[veclen_];
 		for(int i=0;i<part_m_;i++)
 		{
-			subvec[i] = new ElementType[stride];
-			getSubVector(i,subvec[i],vec);
+			restsubvec[i] = new ElementType[stride];
 		}
+
+		std::vector<std::vector<DistanceType>> distance_lookup_table;
+		distance_lookup_table.resize(part_m_);
+		for(int i=0;i<part_m_;i++)
+			distance_lookup_table[i].resize(cluster_k_);
 
 		for(int i=0;i<checks_num;i++)
 		{
@@ -711,9 +855,18 @@ private:
 			bool flag = index_dist.popMin(now);
 			if(!flag)
 				;
-
 			int id = now.index;
 			
+			for(int j=0;j<veclen_;j++)
+				restvec[j] = vec[j] - (coarse_index_[id]->pivot)[j];
+
+			for(int j=0;j<part_m_;j++)
+				getSubVector(j, restsubvec[j], restvec);
+
+			for(int j=0;j<part_m_;j++)
+				for(int k=0;k<cluster_k_;k++)
+					distance_lookup_table[j][k] = distance_(restsubvec[j], (*lookup_table_[j])[k]->pivot, stride);
+
 			for(int j=0;j<coarse_index_[id]->volume;j++)
 			{
 				int y_index = (coarse_index_[id]->container)[j];
@@ -723,11 +876,16 @@ private:
 				DistanceType d = 0;
 				for(int k=0;k<part_m_;k++)
 				{
-					d += distance_((lookup_table_[k][part_indices_[y_index][k]])->pivot,subvec[k],stride);
+					//d += distance_(((*lookup_table_[k])[part_indices_[y_index][k]])->pivot,subvec[k],stride);
+					d += distance_lookup_table[k][part_indices_[y_index][k]];
 				}
 				result.addPoint(d,y_index);
 			}
 		}
+
+		delete[] restvec;
+		for(int i=0;i<part_m_;i++)
+			delete[] restsubvec[i];
 
 	}
 
@@ -741,22 +899,22 @@ private:
 
 	void partMatrix()
 	{
-		part_indices_.resize(veclen_);
+		part_information_.resize(veclen_);
 		for(size_t i=0;i<veclen_;i++){
 			part_information_[i] = i;		
 		}
 
-		switch (method_){
-		case 0:
+		if(method_ == 0)
 			return;
-		case 1:
+		else if(method_ == 1){
 			UniqueRandom r(veclen_);
 			for(int i=0;i<veclen_;i++){
-				rnd = r.next();
+				int rnd = r.next();
 				part_information_[i] = rnd;
 			}
-			break;
-		case 2:
+			return;
+		}
+		else if(method_ == 2){
 			if(rmatrix_ == NULL){
 				throw FLANNException("Dont find rmatrix!!");
 				return;
@@ -764,12 +922,14 @@ private:
 			for(int i=0;i<veclen_;i++){
 				part_information_[i] = (*rmatrix_)[i];
 			}
-		default:
+			return;
+		}
+		else{
 			throw FLANNException("Unknown algorithm for parting original matrix.");
 		}
 	}
 
-	void getSubVector(int m,ElementType * subVector,const ElementType * Vector)
+	void getSubVector(int m,ElementType * subVector,const ElementType * Vector) const 
 	{
 		int stride = veclen_/part_m_;
 		int first = m*stride;
@@ -817,7 +977,7 @@ private:
 
 	int iterations_;
 
-	int memoryCounters_;
+	int memoryCounter_;
 
 	CenterChooser<Distance>* chooseCenters_;
 
@@ -831,7 +991,7 @@ private:
 
 	//part the matrix based on the rmatrix
 
-	std::vector<int> * rmatrix_;
+	std::vector<size_t> * rmatrix_;
 
 	// save the lookup_table used to find the clusters of the feature vector.
 
@@ -840,6 +1000,10 @@ private:
 	coarse_table coarse_index_;
 
 	int coarse_cluster_k_;
+
+	flann_centers_init_t centers_init_;
+
+	USING_BASECLASS_SYMBOLS
 
 };
 	

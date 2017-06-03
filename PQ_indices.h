@@ -6,6 +6,9 @@
 #include "PQSingle_index.h"
 #include "IVFADC_index.h"
 
+
+namespace flann{
+
 template<typename Distance>
 inline NNIndex<Distance>*
 	create_PQ_index_by_mark(const int mark,
@@ -22,6 +25,8 @@ inline NNIndex<Distance>*
 		nnIndex = create_index_<IVFADCIndex,Distance,ElementType>(dataset, params, distance);
 	}
 	return nnIndex;
+}
+
 }
 
 #endif /* FLANN_PQ_INDICES_H */

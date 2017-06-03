@@ -41,7 +41,6 @@ enum part_method{
 struct PQSingleIndexParams : public IndexParams{
 
 	PQSingleIndexParams(int cluster_k = 32,int part_m = 8,int method = 0,int iterator = 11,
-						std::vector<size_t> * rmatrix = NULL,
 						flann_centers_init_t centers_init = FLANN_CENTERS_RANDOM)
 	{
 	
@@ -52,7 +51,7 @@ struct PQSingleIndexParams : public IndexParams{
 		(*this)["iterator"] = iterator;
 		(*this)["center_init"] = centers_init;
 
-		(*this)["rmatrix"] = rmatrix;
+		//(*this)["rmatrix"] = rmatrix;
 
 	}
 };
@@ -68,14 +67,18 @@ class PQSingleIndex : public NNIndex<Distance>
 {
 public:
 	typedef typename Distance::ElementType ElementType;
-	typedef typename Distance::DistanceType DistanceType;
+	typedef typename Distance::ResultType DistanceType;
 
 	typedef NNIndex<Distance> BaseClass;
 
 	typedef bool needs_vector_space_distance;
 
-	int getType() const{
+	int getType_PQ() const{
 		return -100;
+	}
+
+	flann_algorithm_t getType() const{
+		return FLANN_INDEX_SAVED;
 	}
 
 	/*
@@ -86,36 +89,37 @@ public:
                 Distance d = Distance())
 				: BaseClass(params,d), memoryCounter_(0)
 	{
-		cluster_k_ = get_params(params,"cluster_k",32);
+		//std::cout<<"start"<<std::endl;
 		part_m_ = get_param(params,"part_m",8);
-        iterations_ = get_param(params,"iterations",11);
-		rmatrix_ = get_param(params,"rmatrix",NULL);
+        iterations_ = get_param(params,"iterator",11);
+		//rmatrix_ = get_param(params,"rmatrix",NULL);
 		if (iterations_<0) {
             iterations_ = (std::numeric_limits<int>::max)();
         }
 
-		method_ = get_params(params,"method",0);
+		cluster_k_ = get_param(params,"cluster_k",32);
+		method_ = get_param(params,"method",0);
 		centers_init_  = get_param(params,"centers_init",FLANN_CENTERS_RANDOM);
 
 		initCenterChooser();
         chooseCenters_->setDataset(inputData);
 
 		setDataset(inputData);
-
+		//std::cout<<"ending the init"<<std::endl;
 	}
 
 	PQSingleIndex(const IndexParams& params = PQSingleIndexParams(), Distance d = Distance())
         : BaseClass(params, d),  memoryCounter_(0)
     {
-		cluster_k_ = get_params(params,"cluster_k",32);
+		cluster_k_ = get_param(params,"cluster_k",32);
 		part_m_ = get_param(params,"part_m",8);
-        iterations_ = get_param(params,"iterations",11);
-		rmatrix_ = get_param(params,"rmatrix",NULL);
+        iterations_ = get_param(params,"iterator",11);
+		//rmatrix_ = get_param(params,"rmatrix",NULL);
 		if (iterations_<0) {
             iterations_ = (std::numeric_limits<int>::max)();
         }
 
-		method_ = get_params(params,"method",0);
+		method_ = get_param(params,"method",0);
 		centers_init_  = get_param(params,"centers_init",FLANN_CENTERS_RANDOM);
 
 		initCenterChooser();
@@ -123,15 +127,14 @@ public:
 
 	/* not implementing */
 
-	PQSingleIndex(const KMeansIndex& other) : BaseClass(other),
-    	    (other.branching_),
+	PQSingleIndex(const PQSingleIndex& other) : BaseClass(other),
     		iterations_(other.iterations_),
     		centers_init_(other.centers_init_),
     		cluster_k_(other.cluster_k_),
 			part_m_(other.part_m_),
 			method_(other.method_),
-    		memoryCounter_(other.memoryCounter_)
-			rmatrix_(other.ramtrix_)
+    		memoryCounter_(other.memoryCounter_),
+			rmatrix_(other.rmatrix_)
     {
     	initCenterChooser();
     }
@@ -167,7 +170,9 @@ public:
     virtual ~PQSingleIndex()
     {
     	delete chooseCenters_;
+		//std::cout<<"delete Index"<<std::endl;
     	freeIndex();
+		//std::cout<<"finishing delete"<<std::endl;
     }
 
 	BaseClass* clone() const
@@ -214,24 +219,28 @@ public:
     	ar & cluster_k_;
 		ar & part_m_;
 		ar & method_;
-    	ar & iteration_;
+    	ar & iterations_;
     	ar & memoryCounter_;
     	ar & centers_init_;
+
+		typedef PQSingleIndex<Distance> Index;
+		Index* obj = static_cast<Index*>(ar.getObject());
 
 		if(method_ == 2)
 			ar & serialization::make_binary_object(rmatrix_, obj->veclen_*sizeof(int));
 
     	if (Archive::is_loading::value) {
 			lookup_table_.resize(part_m_);
-			for(int i=0;i<size_;i++){
-				lookup_table_[i]->resize(cluster_k_);
+			for(int i=0;i<part_m_;i++)
+				lookup_table_[i] = new single_cluster(cluster_k_);
+			for(int i=0;i<part_m_;i++){
 				for(int j=0;j<cluster_k_;j++){
 					(*lookup_table_[i])[j] = new(pool_) Node();
 				}
 			}
     	}
 
-		for(int i=0;i<size_;i++)
+		for(int i=0;i<part_m_;i++)
 			for(int j=0;j<cluster_k_;j++)
 				ar & *((*lookup_table_[i])[j]);
 
@@ -246,11 +255,13 @@ public:
             index_params_["centers_init"] = centers_init_;
             index_params_["method"] = method_;
     	}
+
     }
 
 	void saveIndex(FILE* stream)
     {
     	serialization::SaveArchive sa(stream);
+		//std::cout<<"serialization!!"<<std::endl;
     	sa & *this;
     }
 
@@ -261,6 +272,7 @@ public:
     	la & *this;
     }
 
+	
 	 /**
      * Find set of nearest neighbors to vec. Their indices are stored inside
      * the result object.
@@ -277,6 +289,8 @@ public:
 	
     void findNeighbors(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
     {
+		//if(search_cnt_%500 == 0)
+		//	std::cout<<"has searched "<<search_cnt_<<" vectors!"<<std::endl;
     	if (removed_) {
     		findNeighborsWithRemoved<true>(result, vec, searchParams);
     	}
@@ -290,7 +304,62 @@ public:
 		not implementing
 	*/
 
-	void getLookupTable(){};
+	void getLookupTable(int id,std::vector<double *> & sublook)
+	{
+		if(sublook.size() != cluster_k_)
+			sublook.resize(cluster_k_,NULL);
+		for(int i=0;i<cluster_k_;i++)
+		{
+			sublook[i] = new double[veclen_/part_m_];
+		}
+		for(int i=0;i<cluster_k_;i++)
+		{
+			for(int j=0;j<veclen_/part_m_;j++)
+			{
+				//std::cout<<"i: "<<i<<" j: "<<j<<std::endl;
+				sublook[i][j] = ((*lookup_table_[id])[i])->pivot[j];
+			}
+		}
+	};
+
+	void getIndices(int id,std::vector<int> & indices)
+	{
+		if(indices.size() != size_)
+		{
+			indices.resize(size_);
+		}
+
+		for(int i=0;i<size_;i++)
+		{
+			indices[i] = part_indices_[i][id];
+		}
+	}
+
+	void getFeature(int id,std::vector<double *> & subfeature)
+	{
+		int stride = veclen_/part_m_;
+		if(subfeature.size() != size_)
+		{
+			subfeature.resize(size_);
+		}
+		for(int i=0;i<size_;i++)
+		{
+			subfeature[i] = new double[stride];
+		}
+
+		for(int i=0;i<size_;i++)
+		{
+			for(int j=0;j<stride;j++)
+			{
+				subfeature[i][j] = points_[i][part_information_[j+id*stride]];
+			}
+		}
+	}
+
+	int getStride() const
+	{
+		return veclen_/part_m_;
+	}
 
 protected:
 
@@ -300,12 +369,21 @@ protected:
 
 	void buildIndexImpl()
     {
+		//std::cout<<"hi!"<<std::endl;
+		search_cnt_ = 0;
         if (cluster_k_<2) {
             throw FLANNException("cluster_k_ factor must be at least 2");
         }
 	
+		Logger::info("start parting\n");
+
 		partMatrix(); // to part matrix based on method
+
+		Logger::info("end parting\n");
+
 		computeClustering(); // to compute clustering centor and initial lookup_table
+
+		Logger::info("end computeClustering\n");
 
 	}
 
@@ -332,6 +410,8 @@ private:
 		template<typename Archive>
 		void serialize(Archive& ar){
 		
+			//std::cout<<"ok!"<<std::endl;
+
 			typedef PQSingleIndex<Distance> Index;
 			Index* obj = static_cast<Index*>(ar.getObject());
 
@@ -353,11 +433,15 @@ private:
 
 	void freeIndex()
 	{
-		for(int i=0;i<size_;i++)
-			for(int j=0;j<cluster_k_;j++){
-				(*lookup_table_[i])[j]->~Node();
-				(*lookup_table_[i])[j] = NULL;
-			}
+		//std::cout<<"hi"<<std::endl;
+		if(lookup_table_.size() > 0){		
+			for(int i=0;i<part_m_;i++)
+				for(int j=0;j<cluster_k_;j++){
+					//std::cout<<"i: "<<i<<"j: "<<j<<std::endl;
+					(*lookup_table_[i])[j]->~Node();
+					(*lookup_table_[i])[j] = NULL;
+				}
+		}
 		pool_.free();
 	}
 
@@ -367,6 +451,7 @@ private:
 
 	void computeClustering()
 	{
+		Logger::info("init the same variance\n");
 		lookup_table_.resize(part_m_);
 
 		for(int i=0;i<part_m_;i++)
@@ -378,38 +463,48 @@ private:
 		}
 
 		part_indices_.resize(size_);
-		for(int i=0;i<part_m_;i++)
+		for(int i=0;i<size_;i++)
 			part_indices_[i].resize(part_m_);
 
-		ElementType ** all_sub;
-		all_sub = new ElementType*[size_];
+		std::vector<ElementType *> all_sub(size_);
 		for(int i=0;i<size_;i++){
-			all_sub[i] = new ElementType[part_m_];
-		}
+			all_sub[i] = new ElementType[veclen_/part_m_];
+		}	
 
 		int * indices;
 		indices = new int[size_];
 		for(int i=0 ;i<size_;i++)
 			indices[i] = i;
 
+		//std::cout<<"size: "<<size_<<std::endl;
+		//std::cout<<"part_m_: "<<part_m_<<std::endl;
+		//std::cout<<"cluster: "<<cluster_k_<<std::endl;
+		//std::cout<<"len: "<<veclen_<<std::endl;
 		for(int i=0;i<part_m_;i++){
-		
+
+			if(Logger::getLevel() >= FLANN_LOG_INFO)
+				std::cout<<"computing "<<i<<"/"<<part_m_<<" cluster"<<std::endl;
 			computeSubClustering(i,lookup_table_[i],all_sub,indices);
 
 		}
+		
 
-		for(int i=0;i<size_;i++){
-			delete[] all_sub[i];
-		}
-		delete[] all_sub;
 		delete[] indices;
+		//std::cout<<"go go"<<std::endl;
+		for(int i=0;i<size_;i++){
+			delete[] (all_sub[i]);
+		}
+
 
 	}
 
-	void computeSubClustering(int id,single_cluster * save,ElementType ** allsub,int * indices)
+	void computeSubClustering(int id,single_cluster * save,std::vector<ElementType *>& allsub,int * indices)
 	{
 		
+		Logger::info("initialize every variance\n");
 		loadSubVector(id,allsub);
+		//delete[] allsub[0];
+		//std::cout<<id<<' '<<"delete "<<std::endl;
 
 		std::vector<int> centers_idx(cluster_k_);
 		int centers_length;
@@ -428,6 +523,8 @@ private:
         std::vector<int> count(cluster_k_,0);
 
 		std::vector<int> belongs_to(size_);
+
+		Logger::info("computing initial cluster_center\n");
         for (int i=0; i<size_; ++i) {
 
             DistanceType sq_dist = distance_(allsub[indices[i]], dcenters[0], stride);
@@ -444,17 +541,20 @@ private:
             }
             count[belongs_to[i]]++;
         }
+		Logger::info("finish computing initial cluster_center\n");
 
 		bool converged = false;
 		int iteration = 0;
-		while(!converged && iteration<iterations){
+		while(!converged && iteration<iterations_){
 			converged = true;
 			iteration++;
 
 			//compute the new cluster centers;
+			if(Logger::getLevel() >= FLANN_LOG_INFO )
+				std::cout<<"iterate "<<iteration<<"/"<<iterations_<<std::endl;
 
 			for(int i=0;i<cluster_k_;i++){
-			    memset(dcenters[i],0,sizeof(double)*cluster_k_);
+			    memset(dcenters[i],0,sizeof(double)*stride);
                 radiuses[i] = 0;
 			}
 			for (int i=0; i<size_; ++i) {
@@ -472,6 +572,8 @@ private:
                 }
             }
 			// reassign points to clusters
+
+			//std::cout<<iteration<<" "<<size_<<std::endl;
 
             for (int i=0; i<size_; ++i) {
                 DistanceType sq_dist = distance_(allsub[indices[i]], dcenters[0], stride);
@@ -499,16 +601,18 @@ private:
                 // if one cluster converges to an empty cluster,
                 // move an element into that cluster
                 if (count[i]==0) {
+					//std::cout<<"empty: "<<i<<std::endl;
                     int j = (i+1)%cluster_k_;
                     while (count[j]<=1) {
                         j = (j+1)%cluster_k_;
                     }
-
+					//std::cout<<"j: "<<j<<std::endl;
                     for (int k=0; k<size_; ++k) {
                         if (belongs_to[k]==j) {
                             belongs_to[k] = i;
                             count[j]--;
                             count[i]++;
+							//std::cout<<"k: "<<k<<std::endl;
                             break;
                         }
                     }
@@ -516,6 +620,10 @@ private:
                 }
             }
 		}
+
+		if(Logger::getLevel() >= FLANN_LOG_INFO)
+			std::cout<<"finish iteration : "<<id<<"  "<<iteration<<"  iterations_: "<<iterations_<<std::endl;
+		Logger::info("store result\n");
 
 		for (int i=0; i<cluster_k_; ++i) {
             (*save)[i]->pivot = new DistanceType[stride];
@@ -544,34 +652,43 @@ private:
 			part_indices_[i][id] = belongs_to[i];
 		}
 
-		delete[] dcenters;
+		delete[] dcenters.ptr();
 	}
 
-	void loadSubVector(int id,ElementType ** allsub){
-	
-		for(int i=0;i<size_;i++)
-			getSubVector(id,allsub[i],point_[i]);
+	void loadSubVector(int id,std::vector<ElementType *>& allsub){
+
+		int stride = veclen_/part_m_;
+		int first = id*stride;
+		for(int i=0;i<size_;i++){
+			//std::cout<<i+first<<std::endl;
+			for(int j=0;j<stride;j++){
+				allsub[i][j] = (ElementType)points_[i][part_information_[j+first]];
+			}
+			//std::cout<<allsub[0]<<std::endl;
+			//delete[] allsub[0];
+			//std::cout<<"delete loadsub"<<std::endl;
+		}
 
 	}
 
 	void partMatrix()
 	{
-		part_indices_.resize(veclen_);
+		part_information_.resize(veclen_);
 		for(size_t i=0;i<veclen_;i++){
 			part_information_[i] = i;		
 		}
 
-		switch (method_){
-		case 0:
+		if(method_ == 0)
 			return;
-		case 1:
+		else if(method_ == 1){
 			UniqueRandom r(veclen_);
 			for(int i=0;i<veclen_;i++){
-				rnd = r.next();
+				int rnd = r.next();
 				part_information_[i] = rnd;
 			}
-			break;
-		case 2:
+			return;
+		}
+		else if(method_ == 2){
 			if(rmatrix_ == NULL){
 				throw FLANNException("Dont find rmatrix!!");
 				return;
@@ -579,7 +696,9 @@ private:
 			for(int i=0;i<veclen_;i++){
 				part_information_[i] = (*rmatrix_)[i];
 			}
-		default:
+			return;
+		}
+		else{
 			throw FLANNException("Unknown algorithm for parting original matrix.");
 		}
 	}
@@ -590,7 +709,7 @@ private:
 		params subVector:new subvector
 	*/
 	
-	void getSubVector(int m,ElementType * subVector,const ElementType * Vector)
+	void getSubVector(int m,ElementType * subVector,const ElementType * Vector) const
 	{
 		int stride = veclen_/part_m_;
 		int first = m*stride;
@@ -602,10 +721,10 @@ private:
 	template<bool with_removed>
 	void findNeighborsWithRemoved(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
 	{
-	
-		int searchMethod = searchParams.searchMethod;
+		PQSearchParams * now = (PQSearchParams *)(&searchParams);
+		int searchMethod = now->searchMethod;
 		if(searchMethod < 0)
-			searchMethod = -1;
+			searchMethod = 1;
 
 		/*
 			searchMethod == 1 ,using ADC
@@ -624,7 +743,7 @@ private:
 	}
 
 	template<bool with_removed>
-	void findNNADC(ResultSet<DistanceType>& result, const ElementType* vec)
+	void findNNADC(ResultSet<DistanceType>& result, const ElementType* vec) const
 	{
 
 		int stride = veclen_/part_m_;
@@ -638,6 +757,23 @@ private:
 
 		DistanceType wsq = result.worstDist();
 
+		std::vector<std::vector<DistanceType>> distance_lookup_table;
+		distance_lookup_table.resize(part_m_);
+		for(int i=0;i<part_m_;i++)
+			distance_lookup_table[i].resize(cluster_k_);
+		
+		for(int i=0;i<part_m_;i++)
+		{
+			for(int j=0;j<cluster_k_;j++)
+			{
+				DistanceType dis;
+				DistanceType * cluster_head;
+				cluster_head = (*lookup_table_[i])[j]->pivot;
+				dis = distance_(cluster_head, subvec[i],stride);
+				distance_lookup_table[i][j] = dis;
+			}
+		}
+
 		DistanceType dis = 0;
 		DistanceType * cluster_head;
 		for(int i=0;i<size_;i++){
@@ -647,7 +783,8 @@ private:
             }
 			for(int j=0;j<part_m_;j++){
 				cluster_head = (*lookup_table_[j])[part_indices_[i][j]]->pivot;
-				dis += distance_(cluster_head, subvec[j], stride);
+				//dis += distance_(cluster_head, subvec[j], stride);
+				dis += distance_lookup_table[j][part_indices_[i][j]];
 			}
 			result.addPoint(dis, i);
 
@@ -657,7 +794,7 @@ private:
 	}
 
 	template<bool with_removed>
-	void findNNSDC(ResultSet<DistanceType>& result, const ElementType* vec)
+	void findNNSDC(ResultSet<DistanceType>& result, const ElementType* vec) const 
 	{
 	
 		int stride = veclen_/part_m_;
@@ -677,9 +814,9 @@ private:
 		DistanceType * cluster_head;
 		for(int i=0;i<part_m_;i++){
 			dist = 0;
-			best_dist[i] = 0;
+			best_dist[i] = wsq;
+			getSubVector(i,subvec,vec);
 			for(int j=0;j<cluster_k_;j++){
-				getSubVector(j,subvec,vec);
 				cluster_head = (*lookup_table_[i])[j]->pivot;
 				dist = distance_(cluster_head, subvec, stride);
 				if(dist < best_dist[i]){
@@ -704,14 +841,14 @@ private:
 			for(int j=0;j<part_m_;j++){
 				cluster_head_sq = (*lookup_table_[j])[product_id[j]]->pivot;
 				cluster_head_fe = (*lookup_table_[j])[part_indices_[i][j]]->pivot;
-				dis += distance_(cluster_head_fe, cluster_head_sq, stride);
+				dist += distance_(cluster_head_fe, cluster_head_sq, stride);
 			}
-			result.addPoint(dis, i);
+			result.addPoint(dist, i);
 
 		}
 
 		delete[] subvec;
-		delegate[] best_dist;
+		delete[] best_dist;
 	}
 
 	void swap(PQSingleIndex& other)
@@ -735,6 +872,8 @@ private:
 
 	PooledAllocator pool_;
 
+	int search_cnt_;
+
 	int cluster_k_;
 
 	int part_m_;
@@ -743,7 +882,7 @@ private:
 
 	int iterations_;
 
-	int memoryCounters_;
+	int memoryCounter_;
 
 	CenterChooser<Distance>* chooseCenters_;
 
@@ -757,11 +896,13 @@ private:
 
 	//part the matrix based on the rmatrix
 
-	std::vector<int> * rmatrix_;
+	std::vector<size_t> * rmatrix_;
 
 	// save the lookup_table used to find the clusters of the feature vector.
 
 	LookupTable lookup_table_;
+
+	flann_centers_init_t centers_init_;
 
 	USING_BASECLASS_SYMBOLS
 
